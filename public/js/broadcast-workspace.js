@@ -37,6 +37,98 @@ let _wsState = {
     _liveStatsTimer: null,  // interval for updating live stats
 };
 
+const WS_VIBE_DEFAULTS = {
+    enabled: 0,
+    widget_title: 'Vibe Coding',
+    viewer_depth: 'standard',
+    show_prompts: 1,
+    show_responses: 1,
+    show_thinking: 0,
+    show_tool_calls: 1,
+    show_tool_arguments: 0,
+    show_file_events: 1,
+    show_file_snippets: 0,
+    redact_file_paths: 1,
+    paused: 0,
+    delay_ms: 0,
+    max_events: 18,
+    max_prompt_chars: 220,
+    max_response_chars: 360,
+    max_thinking_chars: 140,
+    max_tool_chars: 140,
+    max_snippet_chars: 140,
+};
+
+function _wsNormalizeVibeSettings(settings) {
+    const source = settings && typeof settings === 'object' ? settings : {};
+    const boolField = (key, fallback) => {
+        if (source[key] === undefined || source[key] === null) return fallback;
+        return source[key] ? 1 : 0;
+    };
+    const intField = (key, fallback, min, max) => {
+        const value = parseInt(source[key], 10);
+        if (!Number.isFinite(value)) return fallback;
+        return Math.min(max, Math.max(min, value));
+    };
+    const depth = ['headline', 'standard', 'deep'].includes(source.viewer_depth) ? source.viewer_depth : WS_VIBE_DEFAULTS.viewer_depth;
+    return {
+        enabled: boolField('enabled', WS_VIBE_DEFAULTS.enabled),
+        widget_title: String(source.widget_title || WS_VIBE_DEFAULTS.widget_title).trim() || WS_VIBE_DEFAULTS.widget_title,
+        viewer_depth: depth,
+        show_prompts: boolField('show_prompts', WS_VIBE_DEFAULTS.show_prompts),
+        show_responses: boolField('show_responses', WS_VIBE_DEFAULTS.show_responses),
+        show_thinking: boolField('show_thinking', WS_VIBE_DEFAULTS.show_thinking),
+        show_tool_calls: boolField('show_tool_calls', WS_VIBE_DEFAULTS.show_tool_calls),
+        show_tool_arguments: boolField('show_tool_arguments', WS_VIBE_DEFAULTS.show_tool_arguments),
+        show_file_events: boolField('show_file_events', WS_VIBE_DEFAULTS.show_file_events),
+        show_file_snippets: boolField('show_file_snippets', WS_VIBE_DEFAULTS.show_file_snippets),
+        redact_file_paths: (source.redact_file_paths === 0 || source.redact_file_paths === false) ? 0 : 1,
+        paused: boolField('paused', WS_VIBE_DEFAULTS.paused),
+        delay_ms: intField('delay_ms', WS_VIBE_DEFAULTS.delay_ms, 0, 120000),
+        max_events: intField('max_events', WS_VIBE_DEFAULTS.max_events, 1, 100),
+        max_prompt_chars: intField('max_prompt_chars', WS_VIBE_DEFAULTS.max_prompt_chars, 60, 1200),
+        max_response_chars: intField('max_response_chars', WS_VIBE_DEFAULTS.max_response_chars, 80, 2400),
+        max_thinking_chars: intField('max_thinking_chars', WS_VIBE_DEFAULTS.max_thinking_chars, 40, 1200),
+        max_tool_chars: intField('max_tool_chars', WS_VIBE_DEFAULTS.max_tool_chars, 40, 1200),
+        max_snippet_chars: intField('max_snippet_chars', WS_VIBE_DEFAULTS.max_snippet_chars, 40, 1200),
+    };
+}
+
+function _wsReadStoredVibeSettings(profile) {
+    if (!profile || typeof profile !== 'object') return null;
+    return profile.vibeCoding || profile.vibe_coding || null;
+}
+
+function _wsGetVibeSettings() {
+    _wsState.profile = _wsState.profile || {};
+    _wsState.profile.vibeCoding = _wsNormalizeVibeSettings(_wsReadStoredVibeSettings(_wsState.profile));
+    return _wsState.profile.vibeCoding;
+}
+
+function _wsCollectVibeSettingsFromDom() {
+    return _wsNormalizeVibeSettings({
+        enabled: document.getElementById('bc-ws-vibe-enabled')?.checked ? 1 : 0,
+        widget_title: document.getElementById('bc-ws-vibe-title')?.value.trim() || WS_VIBE_DEFAULTS.widget_title,
+        viewer_depth: document.getElementById('bc-ws-vibe-depth')?.value || WS_VIBE_DEFAULTS.viewer_depth,
+        show_prompts: document.getElementById('bc-ws-vibe-prompts')?.checked ? 1 : 0,
+        show_responses: document.getElementById('bc-ws-vibe-responses')?.checked ? 1 : 0,
+        show_thinking: document.getElementById('bc-ws-vibe-thinking')?.checked ? 1 : 0,
+        show_tool_calls: document.getElementById('bc-ws-vibe-tools')?.checked ? 1 : 0,
+        show_tool_arguments: document.getElementById('bc-ws-vibe-tool-args')?.checked ? 1 : 0,
+        show_file_events: document.getElementById('bc-ws-vibe-files')?.checked ? 1 : 0,
+        show_file_snippets: document.getElementById('bc-ws-vibe-snippets')?.checked ? 1 : 0,
+        redact_file_paths: document.getElementById('bc-ws-vibe-redact-paths')?.checked ? 1 : 0,
+        paused: document.getElementById('bc-ws-vibe-paused')?.checked ? 1 : 0,
+        delay_ms: document.getElementById('bc-ws-vibe-delay')?.value || WS_VIBE_DEFAULTS.delay_ms,
+        max_events: document.getElementById('bc-ws-vibe-max-events')?.value || WS_VIBE_DEFAULTS.max_events,
+        max_prompt_chars: document.getElementById('bc-ws-vibe-max-prompt')?.value || WS_VIBE_DEFAULTS.max_prompt_chars,
+        max_response_chars: document.getElementById('bc-ws-vibe-max-response')?.value || WS_VIBE_DEFAULTS.max_response_chars,
+        max_thinking_chars: document.getElementById('bc-ws-vibe-max-thinking')?.value || WS_VIBE_DEFAULTS.max_thinking_chars,
+        max_tool_chars: document.getElementById('bc-ws-vibe-max-tool')?.value || WS_VIBE_DEFAULTS.max_tool_chars,
+        max_snippet_chars: document.getElementById('bc-ws-vibe-max-snippet')?.value || WS_VIBE_DEFAULTS.max_snippet_chars,
+    });
+}
+
 /* ── Init ────────────────────────────────────────────────────── */
 
 async function initBroadcastWorkspace() {
@@ -152,6 +244,7 @@ async function _wsLoadProfile(managedStreamId) {
         }
         _wsState.streamKey = data.stream_key || null;
         _wsState.profile = data.broadcast_settings || {};
+        _wsState.profile.vibeCoding = _wsNormalizeVibeSettings(_wsReadStoredVibeSettings(_wsState.profile));
         _wsState.whipUrlBase = data.whip_url_base || null;
         _wsState.whipUrlSource = data.whip_url_source || null;
         _wsState.whipUrlWarning = data.whip_url_warning || null;
@@ -185,9 +278,13 @@ function _wsRenderPanel() {
     panel.style.display = '';
 
     const p = _wsState.profile;
+    const vibe = _wsGetVibeSettings();
     const isLive = _wsIsManagedStreamLive(ms.id);
     const method = ms.streaming_method || 'browser';
     const streamKey = _wsState.streamKey || '';
+    const vibePublisherUrl = _wsGetVibePublisherUrl();
+    const vibeFeedUrl = _wsGetVibeFeedUrl(ms);
+    const vibeSlotRef = ms.slug || ms.id;
 
     // Class C: find active session
     let liveSessionId = null;
@@ -654,6 +751,150 @@ function _wsRenderPanel() {
                                 <code>&amp;fontsize=18</code> (px), <code>&amp;bg=1</code> (dark background).
                             </p>
                         </details>
+                    </div>
+                </details>
+
+                <details class="bc-ws-slot-settings">
+                    <summary><i class="fa-solid fa-code"></i> Vibe Coding Feed</summary>
+                    <div class="bc-ws-slot-settings-inner">
+                        <p class="muted" style="font-size:0.82rem;margin-bottom:10px">
+                            Show a live coding activity widget above this slot's chat room. Any compatible publisher can send a sanitized coding feed into this slot, and viewers only see the fields enabled here.
+                        </p>
+                        <div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary)">
+                            <div style="font-weight:600;margin-bottom:8px"><i class="fa-solid fa-plug-circle-bolt"></i> VS Code Quick Setup</div>
+                            <ol style="margin:0 0 10px 18px;font-size:0.82rem;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px">
+                                <li>Create an API token on the Dashboard using the <strong>GitHub Copilot Companion</strong> preset. That preset includes the <code>vibe_coding_publish</code> scope.</li>
+                                <li>In VS Code, run <strong>HoboStreamer Copilot Companion: Open Settings</strong>.</li>
+                                <li>Paste the publisher URL below into <code>copilotChatWebSocket.url</code>.</li>
+                                <li>Paste this slot ID into <code>copilotChatWebSocket.managedStreamId</code> and optionally the slot slug into <code>copilotChatWebSocket.slotSlug</code>.</li>
+                                <li>Paste the API token into <code>copilotChatWebSocket.apiToken</code>, then run <strong>Connect</strong>.</li>
+                            </ol>
+                            <div style="display:flex;flex-wrap:wrap;gap:8px">
+                                <button class="btn btn-small btn-outline" onclick="_wsCopyVibeSettingsTemplate()"><i class="fa-solid fa-copy"></i> Copy Settings Template</button>
+                                <button class="btn btn-small btn-outline" onclick="navigate('/dashboard')"><i class="fa-solid fa-key"></i> Open Dashboard Tokens</button>
+                            </div>
+                        </div>
+                        <div class="bc-ws-row">
+                            <div class="form-group" style="flex:2">
+                                <label>Publisher WebSocket URL</label>
+                                <div style="display:flex;gap:6px;align-items:center">
+                                    <input type="text" id="bc-ws-vibe-publisher-url" class="form-input form-input-sm" readonly value="${esc(vibePublisherUrl)}">
+                                    <button class="btn btn-small" onclick="_wsCopyVibePublisherUrl()" title="Copy URL"><i class="fa-solid fa-copy"></i></button>
+                                </div>
+                            </div>
+                            <div class="form-group" style="flex:1">
+                                <label>Managed Stream ID</label>
+                                <div style="display:flex;gap:6px;align-items:center">
+                                    <input type="text" id="bc-ws-vibe-managed-stream-id" class="form-input form-input-sm" readonly value="${ms.id}">
+                                    <button class="btn btn-small" onclick="_wsCopyVibeManagedStreamId()" title="Copy ID"><i class="fa-solid fa-copy"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bc-ws-row">
+                            <div class="form-group" style="flex:1">
+                                <label>Slot Slug</label>
+                                <div style="display:flex;gap:6px;align-items:center">
+                                    <input type="text" id="bc-ws-vibe-slot-slug" class="form-input form-input-sm" readonly value="${esc(ms.slug || '')}" placeholder="Optional">
+                                    <button class="btn btn-small" onclick="_wsCopyVibeSlotSlug()" title="Copy slug"><i class="fa-solid fa-copy"></i></button>
+                                </div>
+                            </div>
+                            <div class="form-group" style="flex:2">
+                                <label>Public Feed Endpoint</label>
+                                <div style="display:flex;gap:6px;align-items:center">
+                                    <input type="text" id="bc-ws-vibe-feed-url" class="form-input form-input-sm" readonly value="${esc(vibeFeedUrl)}">
+                                    <button class="btn btn-small" onclick="_wsCopyVibeFeedUrl()" title="Copy feed URL"><i class="fa-solid fa-copy"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="bc-toggle-label">
+                                <input type="checkbox" id="bc-ws-vibe-enabled" ${vibe.enabled ? 'checked' : ''} onchange="_wsSlotSettingChanged()">
+                                Enable vibe-coding widget for this slot
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label class="bc-toggle-label">
+                                <input type="checkbox" id="bc-ws-vibe-paused" ${vibe.paused ? 'checked' : ''} onchange="_wsSlotSettingChanged()">
+                                Pause viewer updates without disconnecting the publisher
+                            </label>
+                        </div>
+                        <div class="bc-ws-row">
+                            <div class="form-group" style="flex:2">
+                                <label>Widget Title</label>
+                                <input type="text" id="bc-ws-vibe-title" class="form-input form-input-sm"
+                                    value="${esc(vibe.widget_title || 'Vibe Coding')}" maxlength="80"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                            <div class="form-group" style="flex:1">
+                                <label>Viewer Depth</label>
+                                <select id="bc-ws-vibe-depth" class="form-input" onchange="_wsSlotSettingChanged()">
+                                    <option value="headline" ${vibe.viewer_depth === 'headline' ? 'selected' : ''}>Headline</option>
+                                    <option value="standard" ${vibe.viewer_depth === 'standard' ? 'selected' : ''}>Standard</option>
+                                    <option value="deep" ${vibe.viewer_depth === 'deep' ? 'selected' : ''}>Deep</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="bc-ws-row">
+                            <div class="form-group" style="flex:1">
+                                <label>Delay (ms)</label>
+                                <input type="number" id="bc-ws-vibe-delay" class="form-input form-input-sm"
+                                    value="${vibe.delay_ms || 0}" min="0" max="120000"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                            <div class="form-group" style="flex:1">
+                                <label>Max Events</label>
+                                <input type="number" id="bc-ws-vibe-max-events" class="form-input form-input-sm"
+                                    value="${vibe.max_events || 18}" min="1" max="100"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                        </div>
+                        <div class="bc-ws-row" style="flex-wrap:wrap">
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-prompts" ${vibe.show_prompts ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> Prompts</label>
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-responses" ${vibe.show_responses ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> Responses</label>
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-thinking" ${vibe.show_thinking ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> Thinking summaries</label>
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-tools" ${vibe.show_tool_calls ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> Tool calls</label>
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-tool-args" ${vibe.show_tool_arguments ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> Tool argument previews</label>
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-files" ${vibe.show_file_events ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> File events</label>
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-snippets" ${vibe.show_file_snippets ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> File snippets</label>
+                            <label class="bc-toggle-label" style="min-width:220px"><input type="checkbox" id="bc-ws-vibe-redact-paths" ${vibe.redact_file_paths ? 'checked' : ''} onchange="_wsSlotSettingChanged()"> Redact file paths</label>
+                        </div>
+                        <div class="bc-ws-row">
+                            <div class="form-group" style="flex:1">
+                                <label>Prompt Chars</label>
+                                <input type="number" id="bc-ws-vibe-max-prompt" class="form-input form-input-sm"
+                                    value="${vibe.max_prompt_chars || 220}" min="60" max="1200"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                            <div class="form-group" style="flex:1">
+                                <label>Response Chars</label>
+                                <input type="number" id="bc-ws-vibe-max-response" class="form-input form-input-sm"
+                                    value="${vibe.max_response_chars || 360}" min="80" max="2400"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                            <div class="form-group" style="flex:1">
+                                <label>Thinking Chars</label>
+                                <input type="number" id="bc-ws-vibe-max-thinking" class="form-input form-input-sm"
+                                    value="${vibe.max_thinking_chars || 140}" min="40" max="1200"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                        </div>
+                        <div class="bc-ws-row">
+                            <div class="form-group" style="flex:1">
+                                <label>Tool Chars</label>
+                                <input type="number" id="bc-ws-vibe-max-tool" class="form-input form-input-sm"
+                                    value="${vibe.max_tool_chars || 140}" min="40" max="1200"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                            <div class="form-group" style="flex:1">
+                                <label>Snippet Chars</label>
+                                <input type="number" id="bc-ws-vibe-max-snippet" class="form-input form-input-sm"
+                                    value="${vibe.max_snippet_chars || 140}" min="40" max="1200"
+                                    oninput="_wsSlotSettingChanged()">
+                            </div>
+                        </div>
+                        <p class="muted" style="font-size:0.78rem;margin:8px 0 0">
+                            This slot listens on <code>${esc(vibeSlotRef)}</code>. The same publish/feed endpoints also work for other coding publishers, not just the Copilot reference extension.
+                        </p>
                     </div>
                 </details>
 
@@ -1606,6 +1847,7 @@ async function _wsSaveAll() {
             screenResolution: document.getElementById('bc-ws-screen-resolution')?.value || '1080',
             screenFps: document.getElementById('bc-ws-screen-fps')?.value || '30',
             screenBitrate: parseInt(document.getElementById('bc-ws-screen-bitrate')?.value) || 3000,
+            vibeCoding: _wsCollectVibeSettingsFromDom(),
         };
 
         // Save structured fields
@@ -1727,6 +1969,7 @@ function _wsSlotSettingChanged() {
     ms.weather_zip = document.getElementById('bc-ws-weather-zip')?.value.trim() || null;
     ms.weather_detail = document.getElementById('bc-ws-weather-detail')?.value || 'basic';
     ms.weather_show_location = document.getElementById('bc-ws-weather-location')?.checked ? 1 : 0;
+    _wsState.profile.vibeCoding = _wsCollectVibeSettingsFromDom();
     _wsMarkDirty();
 }
 
@@ -2058,10 +2301,11 @@ async function onManagedStreamCreated(newManagedStreamId) {
    ══════════════════════════════════════════════════════════════ */
 
 const _wsRestreamPlatforms = {
-    twitch:  { name: 'Twitch', icon: 'fa-brands fa-twitch', color: '#9146ff', defaultUrl: 'rtmps://live.twitch.tv/app' },
-    youtube: { name: 'YouTube', icon: 'fa-brands fa-youtube', color: '#ff0000', defaultUrl: 'rtmp://a.rtmp.youtube.com/live2' },
-    kick:    { name: 'Kick', icon: 'fa-solid fa-k', color: '#53fc18', defaultUrl: '' },
-    custom:  { name: 'Custom RTMP', icon: 'fa-solid fa-globe', color: '#888', defaultUrl: '' },
+    twitch:        { name: 'Twitch',        icon: 'fa-brands fa-twitch',  color: '#9146ff', defaultUrl: 'rtmps://live.twitch.tv/app' },
+    youtube:       { name: 'YouTube',       icon: 'fa-brands fa-youtube', color: '#ff0000', defaultUrl: 'rtmp://a.rtmp.youtube.com/live2' },
+    kick:          { name: 'Kick',          icon: 'fa-solid fa-k',        color: '#53fc18', defaultUrl: '' },
+    custom:        { name: 'Custom RTMP',   icon: 'fa-solid fa-globe',    color: '#888',    defaultUrl: '' },
+    robotstreamer: { name: 'RobotStreamer', icon: 'fa-solid fa-robot',    color: '#4a9eff', defaultUrl: '', isRobotStreamer: true },
 };
 
 let _wsRestreamDests = []; // cached for current slot
@@ -2165,57 +2409,63 @@ function _wsShowRestreamForm(existing) {
                 ${plats}
             </select>
         </div>
-        <div class="form-group">
-            <label>Name</label>
-            <input type="text" id="ws-rs-name" class="form-input form-input-sm" value="${esc(existing?.name || '')}" placeholder="e.g. My Twitch" maxlength="50">
+        <div id="ws-rs-robotstreamer-notice" style="display:none;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:8px;padding:12px;margin:8px 0">
+            <p style="margin:0 0 8px;font-size:0.9rem"><i class="fa-solid fa-robot" style="color:#4a9eff"></i> <strong>RobotStreamer</strong> uses a dedicated WebSocket connection.</p>
+            <p style="margin:0;font-size:0.82rem;color:var(--text-secondary)">It is not an RTMP destination. Paste your RobotStreamer token and select a robot in the <strong>RobotStreamer</strong> section of the Broadcast Settings panel, then enable the toggle to start restreaming automatically when you go live.</p>
         </div>
-        <div class="form-group">
-            <label>Server URL</label>
-            <input type="text" id="ws-rs-server-url" class="form-input form-input-sm" value="${esc(existing?.server_url || '')}" placeholder="rtmp://...">
-        </div>
-        <div class="form-group">
-            <label>Stream Key</label>
-            <input type="password" id="ws-rs-stream-key" class="form-input form-input-sm" value="${esc(existing?.stream_key || '')}" placeholder="Paste stream key" autocomplete="off">
-        </div>
-        <div class="form-group">
-            <label>Channel URL <span class="muted">(for chat relay)</span></label>
-            <input type="text" id="ws-rs-channel-url" class="form-input form-input-sm" value="${esc(existing?.channel_url || '')}" placeholder="https://twitch.tv/username">
-        </div>
-        <div class="form-group">
-            <label>Quality Preset</label>
-            <select id="ws-rs-quality" class="form-input">${qualityOpts}</select>
-        </div>
-        <div class="bc-ws-row" style="gap:16px">
-            <label class="bc-toggle-label" style="flex:1">
-                <input type="checkbox" id="ws-rs-enabled" ${existing ? (existing.enabled ? 'checked' : '') : 'checked'}>
-                Enabled
-            </label>
-            <label class="bc-toggle-label" style="flex:1">
-                <input type="checkbox" id="ws-rs-auto-start" ${existing?.auto_start ? 'checked' : ''}>
-                Auto-start
-            </label>
-            <label class="bc-toggle-label" style="flex:1">
-                <input type="checkbox" id="ws-rs-chat-relay" ${existing?.chat_relay ? 'checked' : ''}>
-                <i class="fa-solid fa-comments"></i> Chat Relay
-            </label>
-        </div>
-        <details style="margin-top:8px">
-            <summary style="font-size:0.82rem;color:var(--text-secondary);cursor:pointer"><i class="fa-solid fa-sliders"></i> Custom Encoding Overrides</summary>
-            <div class="bc-ws-row" style="margin-top:8px">
-                <div class="form-group" style="flex:1;margin:0">
-                    <label style="font-size:0.78rem">Video Bitrate (kbps)</label>
-                    <input type="number" id="ws-rs-video-bitrate" class="form-input form-input-sm" value="${existing?.custom_video_bitrate || ''}" placeholder="Auto" min="500" max="50000">
-                </div>
-                <div class="form-group" style="flex:1;margin:0">
-                    <label style="font-size:0.78rem">Audio Bitrate (kbps)</label>
-                    <input type="number" id="ws-rs-audio-bitrate" class="form-input form-input-sm" value="${existing?.custom_audio_bitrate || ''}" placeholder="Auto" min="32" max="512">
-                </div>
-                <div class="form-group" style="flex:1;margin:0">
-                    <label style="font-size:0.78rem">FPS</label>
-                    <input type="number" id="ws-rs-fps" class="form-input form-input-sm" value="${existing?.custom_fps || ''}" placeholder="Auto" min="15" max="120">
-                </div>
+        <div id="ws-rs-rtmp-fields">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="ws-rs-name" class="form-input form-input-sm" value="${esc(existing?.name || '')}" placeholder="e.g. My Twitch" maxlength="50">
             </div>
-        </details>
+            <div class="form-group">
+                <label>Server URL</label>
+                <input type="text" id="ws-rs-server-url" class="form-input form-input-sm" value="${esc(existing?.server_url || '')}" placeholder="rtmp://...">
+            </div>
+            <div class="form-group">
+                <label>Stream Key</label>
+                <input type="password" id="ws-rs-stream-key" class="form-input form-input-sm" value="${esc(existing?.stream_key || '')}" placeholder="Paste stream key" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label>Channel URL <span class="muted">(for chat relay)</span></label>
+                <input type="text" id="ws-rs-channel-url" class="form-input form-input-sm" value="${esc(existing?.channel_url || '')}" placeholder="https://twitch.tv/username">
+            </div>
+            <div class="form-group">
+                <label>Quality Preset</label>
+                <select id="ws-rs-quality" class="form-input">${qualityOpts}</select>
+            </div>
+            <div class="bc-ws-row" style="gap:16px">
+                <label class="bc-toggle-label" style="flex:1">
+                    <input type="checkbox" id="ws-rs-enabled" ${existing ? (existing.enabled ? 'checked' : '') : 'checked'}>
+                    Enabled
+                </label>
+                <label class="bc-toggle-label" style="flex:1">
+                    <input type="checkbox" id="ws-rs-auto-start" ${existing?.auto_start ? 'checked' : ''}>
+                    Auto-start
+                </label>
+                <label class="bc-toggle-label" style="flex:1">
+                    <input type="checkbox" id="ws-rs-chat-relay" ${existing?.chat_relay ? 'checked' : ''}>
+                    <i class="fa-solid fa-comments"></i> Chat Relay
+                </label>
+            </div>
+            <details style="margin-top:8px">
+                <summary style="font-size:0.82rem;color:var(--text-secondary);cursor:pointer"><i class="fa-solid fa-sliders"></i> Custom Encoding Overrides</summary>
+                <div class="bc-ws-row" style="margin-top:8px">
+                    <div class="form-group" style="flex:1;margin:0">
+                        <label style="font-size:0.78rem">Video Bitrate (kbps)</label>
+                        <input type="number" id="ws-rs-video-bitrate" class="form-input form-input-sm" value="${existing?.custom_video_bitrate || ''}" placeholder="Auto" min="500" max="50000">
+                    </div>
+                    <div class="form-group" style="flex:1;margin:0">
+                        <label style="font-size:0.78rem">Audio Bitrate (kbps)</label>
+                        <input type="number" id="ws-rs-audio-bitrate" class="form-input form-input-sm" value="${existing?.custom_audio_bitrate || ''}" placeholder="Auto" min="32" max="512">
+                    </div>
+                    <div class="form-group" style="flex:1;margin:0">
+                        <label style="font-size:0.78rem">FPS</label>
+                        <input type="number" id="ws-rs-fps" class="form-input form-input-sm" value="${existing?.custom_fps || ''}" placeholder="Auto" min="15" max="120">
+                    </div>
+                </div>
+            </details>
+        </div>
         <div class="bc-ws-confirm-actions" style="margin-top:16px">
             <button class="btn btn-small" id="ws-rs-cancel">Cancel</button>
             <button class="btn btn-small btn-primary" id="ws-rs-save">
@@ -2226,15 +2476,25 @@ function _wsShowRestreamForm(existing) {
 
     document.body.appendChild(overlay);
 
-    // Auto-fill server URL on platform change
-    if (!isEdit) _wsRestreamPlatformChanged();
+    // Apply platform-specific UI on open
+    _wsRestreamPlatformChanged();
 
     overlay.querySelector('#ws-rs-cancel').onclick = () => overlay.remove();
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 
     overlay.querySelector('#ws-rs-save').onclick = async () => {
+        const platform = document.getElementById('ws-rs-platform').value;
+        const plat = _wsRestreamPlatforms[platform];
+
+        // RobotStreamer is not an RTMP destination — block save and close
+        if (plat && plat.isRobotStreamer) {
+            overlay.remove();
+            toast('Configure RobotStreamer in the Broadcast Settings panel, not as an RTMP destination.', 'info');
+            return;
+        }
+
         const body = {
-            platform: document.getElementById('ws-rs-platform').value,
+            platform,
             name: document.getElementById('ws-rs-name').value.trim(),
             server_url: document.getElementById('ws-rs-server-url').value.trim(),
             stream_key: document.getElementById('ws-rs-stream-key').value.trim(),
@@ -2276,13 +2536,23 @@ function _wsRestreamPlatformChanged() {
     const platform = document.getElementById('ws-rs-platform')?.value;
     const urlInput = document.getElementById('ws-rs-server-url');
     const nameInput = document.getElementById('ws-rs-name');
+    const rtmpFields = document.getElementById('ws-rs-rtmp-fields');
+    const rsNotice = document.getElementById('ws-rs-robotstreamer-notice');
     if (!platform) return;
     const plat = _wsRestreamPlatforms[platform];
-    if (plat && urlInput && !urlInput.value) {
-        urlInput.value = plat.defaultUrl || '';
-    }
-    if (plat && nameInput && !nameInput.value) {
-        nameInput.value = plat.name;
+
+    // Toggle RTMP vs RS view
+    const isRs = !!(plat && plat.isRobotStreamer);
+    if (rtmpFields) rtmpFields.style.display = isRs ? 'none' : '';
+    if (rsNotice) rsNotice.style.display = isRs ? '' : 'none';
+
+    if (!isRs) {
+        if (plat && urlInput && !urlInput.value) {
+            urlInput.value = plat.defaultUrl || '';
+        }
+        if (plat && nameInput && !nameInput.value) {
+            nameInput.value = plat.name;
+        }
     }
 }
 
@@ -2291,6 +2561,63 @@ function _wsCopyOverlayUrl() {
     if (!input) return;
     navigator.clipboard.writeText(input.value).then(() => toast('Overlay URL copied!', 'success'))
         .catch(() => { prompt('Copy manually:', input.value); });
+}
+
+function _wsGetVibePublisherUrl() {
+    const origin = String(window.location.origin || '').replace(/\/$/, '');
+    if (!origin) return '/ws/vibe-coding/publish';
+    return origin.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:') + '/ws/vibe-coding/publish';
+}
+
+function _wsGetVibeFeedUrl(ms = _wsState.selectedMs) {
+    if (!ms || !currentUser?.username) return '';
+    return `${window.location.origin.replace(/\/$/, '')}/api/vibe-coding/channel/${encodeURIComponent(currentUser.username)}/${encodeURIComponent(String(ms.slug || ms.id))}/events`;
+}
+
+function _wsCopyVibePublisherUrl() {
+    _wsCopyText(_wsGetVibePublisherUrl(), 'Vibe publisher URL copied');
+}
+
+function _wsCopyVibeManagedStreamId() {
+    if (!_wsState.selectedMs?.id) {
+        toast('No managed stream selected', 'error');
+        return;
+    }
+    _wsCopyText(String(_wsState.selectedMs.id), 'Managed stream ID copied');
+}
+
+function _wsCopyVibeSlotSlug() {
+    if (!_wsState.selectedMs?.slug) {
+        toast('This slot does not have a slug yet', 'error');
+        return;
+    }
+    _wsCopyText(String(_wsState.selectedMs.slug), 'Slot slug copied');
+}
+
+function _wsCopyVibeFeedUrl() {
+    const url = _wsGetVibeFeedUrl();
+    if (!url) {
+        toast('Public feed URL unavailable', 'error');
+        return;
+    }
+    _wsCopyText(url, 'Public feed URL copied');
+}
+
+function _wsCopyVibeSettingsTemplate() {
+    if (!_wsState.selectedMs?.id) {
+        toast('No managed stream selected', 'error');
+        return;
+    }
+    const template = {
+        copilotChatWebSocket: {
+            url: _wsGetVibePublisherUrl(),
+            apiToken: 'PASTE_VIBE_CODING_TOKEN_HERE',
+            managedStreamId: _wsState.selectedMs.id,
+            slotSlug: _wsState.selectedMs.slug || '',
+            autoConnect: true,
+        },
+    };
+    _wsCopyText(JSON.stringify(template, null, 2), 'Extension settings template copied');
 }
 
 function _wsPreviewOverlay() {

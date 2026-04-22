@@ -11,30 +11,71 @@
 
 /* ── RS Restream Slot ────────────────────────────────────────── */
 // Only one stream at a time can restream to RobotStreamer.
-// The slot stores which streamId is assigned. Persisted in localStorage.
+// Slot is stored as 'm:<managed_stream_id>' only.
+// Legacy 's:<streamId>' and bare-integer formats are auto-migrated on read.
+function parseRsRestreamSlotValue() {
+    const raw = localStorage.getItem('bc-rs-restream-slot');
+    if (!raw) return null;
+    if (raw.startsWith('m:')) {
+        const id = parseInt(raw.slice(2), 10);
+        return Number.isFinite(id) && id > 0 ? { managedStreamId: id } : null;
+    }
+    // Legacy 's:<streamId>' or bare integer — migrate on read:
+    // try to resolve to a managed_stream_id; if not possible, clear the slot.
+    const legacyId = raw.startsWith('s:') ? parseInt(raw.slice(2), 10) : parseInt(raw, 10);
+    if (Number.isFinite(legacyId) && legacyId > 0) {
+        // Find corresponding managed stream among active broadcast streams
+        for (const [, ss] of (typeof broadcastState !== 'undefined' ? broadcastState.streams : new Map())) {
+            if (ss.streamData?.id === legacyId && ss.streamData?.managed_stream_id) {
+                // Migrate to managed format in-place
+                const migratedId = ss.streamData.managed_stream_id;
+                localStorage.setItem('bc-rs-restream-slot', `m:${migratedId}`);
+                console.log(`[RS Slot] Migrated legacy s:${legacyId} → m:${migratedId}`);
+                return { managedStreamId: migratedId };
+            }
+        }
+        // Could not migrate (stream not active) — clear stale legacy slot
+        localStorage.removeItem('bc-rs-restream-slot');
+        console.log(`[RS Slot] Cleared stale legacy slot value: ${raw}`);
+    }
+    return null;
+}
 function getRsRestreamSlotStreamId() {
-    const v = localStorage.getItem('bc-rs-restream-slot');
-    return v ? parseInt(v) : null;
+    const value = parseRsRestreamSlotValue();
+    if (!value) return null;
+
+    if (value.managedStreamId) {
+        for (const [id, ss] of broadcastState.streams) {
+            if (ss.localStream && ss.streamData?.managed_stream_id === value.managedStreamId) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    return null;
 }
 function setRsRestreamSlot(streamId) {
-    if (streamId) localStorage.setItem('bc-rs-restream-slot', String(streamId));
-    else localStorage.removeItem('bc-rs-restream-slot');
-}
-/** Should RS restream auto-start for this stream? */
-function isRsRestreamAssigned(streamId) {
-    const slot = getRsRestreamSlotStreamId();
-    // If no slot assigned, auto-assign to the first stream that goes live
-    if (!slot) return true;
-    if (slot === streamId) return true;
-    // Validate the slotted stream still exists and has media — if not, the slot is
-    // stale from a previous session. Clear it so this new stream can auto-assign.
-    const slotState = broadcastState.streams.get(slot);
-    if (!slotState || !slotState.localStream) {
-        console.log(`[RS Slot] Clearing stale slot ${slot} — stream no longer active, auto-assigning to ${streamId}`);
-        setRsRestreamSlot(null);
-        return true;
+    if (!streamId) {
+        localStorage.removeItem('bc-rs-restream-slot');
+        return;
     }
-    return false; // another LIVE stream holds the slot
+    const ss = getStreamState(streamId);
+    if (ss?.streamData?.managed_stream_id) {
+        localStorage.setItem('bc-rs-restream-slot', `m:${ss.streamData.managed_stream_id}`);
+    } else {
+        // Stream has no managed_stream_id — cannot store a slot-safe reference; clear slot.
+        console.warn(`[RS Slot] Cannot assign RS slot for stream ${streamId}: no managed_stream_id`);
+        localStorage.removeItem('bc-rs-restream-slot');
+    }
+}
+function isRsRestreamAssigned(streamId) {
+    const value = parseRsRestreamSlotValue();
+    if (!value) return true; // no slot assigned → any stream can be used
+    const ss = getStreamState(streamId);
+    if (!ss) return false;
+    // Only managed_stream_id-based slots are now valid
+    return ss.streamData?.managed_stream_id === value.managedStreamId;
 }
 /** Toggle RS restream for the currently active stream */
 function toggleRsRestreamSlot() {
@@ -70,7 +111,6 @@ function assignRsRestreamToStream(streamId) {
     streamId = parseInt(streamId);
     if (!streamId || !Number.isFinite(streamId)) return;
     const currentSlot = getRsRestreamSlotStreamId();
-    // Stop old restream
     if (currentSlot && currentSlot !== streamId) {
         stopRobotStreamerRestream(currentSlot, { quiet: true }).catch(() => {});
     }
@@ -94,15 +134,28 @@ function stopRsRestream() {
 
 /** Start or retry RS restream for the current slot / active stream */
 function startOrRetryRsRestream() {
-    let targetId = getRsRestreamSlotStreamId() || broadcastState.activeStreamId;
+    const slotStreamId = getRsRestreamSlotStreamId();
+    let targetId = slotStreamId || broadcastState.activeStreamId;
+    const slotValue = parseRsRestreamSlotValue();
+
+    // If a managed slot is reserved but not currently live, do not auto-assign a different stream.
+    if (!targetId && slotValue?.managedStreamId) {
+        toast('RobotStreamer slot is reserved for a different stream slot.', 'info');
+        return;
+    }
+
     if (!targetId) return;
     const ss = getStreamState(targetId);
     if (!ss?.localStream) {
-        // Slot stream has no media — try active stream instead
+        if (slotStreamId) {
+            // Slot stream is reserved but not live yet.
+            toast('RobotStreamer slot stream is not live yet.', 'info');
+            updateRsRestreamSlotUI();
+            return;
+        }
         targetId = broadcastState.activeStreamId;
         if (!targetId) return;
     }
-    // Reset retry counters for fresh attempt
     const targetSs = getStreamState(targetId);
     if (targetSs) {
         targetSs._rsConsecutiveShortLived = 0;
@@ -2890,306 +2943,38 @@ function applyManualGain(streamId) {
 /* ── Multi-Platform Restream Destinations ──────────────────── */
 
 const RESTREAM_PLATFORM_META = {
-    youtube: { name: 'YouTube', icon: 'fa-brands fa-youtube', color: '#ff0000' },
-    twitch:  { name: 'Twitch', icon: 'fa-brands fa-twitch', color: '#9146ff' },
-    kick:    { name: 'Kick', icon: 'fa-solid fa-k', color: '#53fc18' },
-    custom:  { name: 'Custom', icon: 'fa-solid fa-globe', color: '#888' },
-};
-
-const RESTREAM_DEFAULT_URLS = {
-    youtube: 'rtmp://a.rtmp.youtube.com/live2',
-    twitch: 'rtmps://live.twitch.tv/app',
-    kick: '',
-    custom: '',
+    youtube:       { name: 'YouTube',       icon: 'fa-brands fa-youtube', color: '#ff0000' },
+    twitch:        { name: 'Twitch',        icon: 'fa-brands fa-twitch',  color: '#9146ff' },
+    kick:          { name: 'Kick',          icon: 'fa-solid fa-k',        color: '#53fc18' },
+    custom:        { name: 'Custom',        icon: 'fa-solid fa-globe',    color: '#888' },
+    // RobotStreamer uses WebSocket (not RTMP) so it is NOT a standard RTMP destination.
+    // It is listed here so the UI can show its status card and link to its own settings panel.
+    robotstreamer: { name: 'RobotStreamer', icon: 'fa-solid fa-robot',    color: '#00bcd4', isRobotStreamer: true },
 };
 
 /** Client-side cache of loaded destinations */
 let _restreamDestinations = [];
 let _restreamStatusPollInterval = null;
-let _restreamEditingId = null; // null = adding new, number = editing existing
 
 /** Load restream destinations from server */
 async function loadRestreamDestinations() {
     try {
-        const data = await api('/restream/destinations');
+        const activeSS = getActiveStreamState();
+        const selectedManagedStream = document.getElementById('bc-managed-stream')?.value;
+        const managedStreamId = activeSS?.streamData?.managed_stream_id || (selectedManagedStream ? parseInt(selectedManagedStream, 10) : null);
+        const url = managedStreamId ? `/restream/destinations?managed_stream_id=${managedStreamId}` : '/restream/destinations';
+        const data = await api(url);
         _restreamDestinations = data.destinations || [];
-        renderRestreamDestinations();
     } catch (err) {
         console.warn('[Restream] Failed to load destinations:', err.message);
-    }
-}
-
-/** Render destination cards in the settings section */
-function renderRestreamDestinations() {
-    const container = document.getElementById('bc-restream-destinations');
-    if (!container) return;
-
-    if (_restreamDestinations.length === 0) {
-        container.innerHTML = '';
-        return;
-    }
-
-    let html = '';
-    for (const dest of _restreamDestinations) {
-        const meta = RESTREAM_PLATFORM_META[dest.platform] || RESTREAM_PLATFORM_META.custom;
-        const enabledClass = dest.enabled ? '' : 'style="opacity:0.5"';
-        const autoStartBadge = dest.auto_start ? '<span style="font-size:0.7rem;color:var(--text-secondary);margin-left:4px" title="Auto-starts when you go live">[auto]</span>' : '';
-        const qualityLabel = dest.quality_preset && dest.quality_preset !== 'auto' ? dest.quality_preset : 'auto';
-        const qualityBadge = `<span style="font-size:0.65rem;color:var(--text-secondary);margin-left:4px;text-transform:uppercase" title="Encoding quality preset">[${qualityLabel}]</span>`;
-
-        // Show custom overrides badge if any are set
-        const customParts = [];
-        if (dest.custom_video_bitrate) customParts.push(`${dest.custom_video_bitrate}k`);
-        if (dest.custom_fps) customParts.push(`${dest.custom_fps}fps`);
-        if (dest.custom_encoder_preset) customParts.push(dest.custom_encoder_preset);
-        const customBadge = customParts.length > 0
-            ? `<span style="font-size:0.6rem;color:var(--accent);margin-left:3px" title="Custom overrides: ${customParts.join(', ')}">[${customParts.join(' ')}]</span>`
-            : '';
-
-        const keyDisplay = dest.has_key ? `Key: ${dest.stream_key}` : 'No key set';
-        const chatRelayBadge = dest.chat_relay ? '<span style="font-size:0.65rem;color:#53fc18;margin-left:4px" title="Chat relay enabled">[relay]</span>' : '';
-        const channelUrlBadge = dest.channel_url ? `<a href="${dest.channel_url}" target="_blank" rel="noopener" style="font-size:0.65rem;color:${meta.color};margin-left:4px;text-decoration:none" title="${dest.channel_url}"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : '';
-
-        html += `<div class="bc-restream-dest-card" ${enabledClass} data-dest-id="${dest.id}">
-            <span class="bc-restream-platform-icon" style="color:${meta.color}"><i class="${meta.icon}"></i></span>
-            <span class="bc-restream-name" title="${dest.name || meta.name}">${dest.name || meta.name}</span>
-            ${autoStartBadge}${qualityBadge}${customBadge}${chatRelayBadge}${channelUrlBadge}
-            <span class="bc-restream-dest-meta">${keyDisplay}</span>
-            <div class="bc-restream-dest-actions">
-                <button class="bc-ctrl-btn-sm" onclick="editRestreamDestination(${dest.id})" title="Edit"><i class="fa-solid fa-pen"></i></button>
-                <button class="bc-ctrl-btn-sm" onclick="toggleRestreamDestination(${dest.id})" title="${dest.enabled ? 'Disable' : 'Enable'}">
-                    <i class="fa-solid fa-${dest.enabled ? 'toggle-on' : 'toggle-off'}"></i>
-                </button>
-                <button class="bc-ctrl-btn-sm" onclick="deleteRestreamDestination(${dest.id})" title="Delete"><i class="fa-solid fa-trash"></i></button>
-            </div>
-        </div>`;
-    }
-    container.innerHTML = html;
-}
-
-/** Show the add destination form */
-function showAddRestreamDestination() {
-    _restreamEditingId = null;
-    document.getElementById('bc-restream-add-form').style.display = '';
-    document.getElementById('bc-restream-add-btn-row').style.display = 'none';
-    // Reset form
-    document.getElementById('bc-restream-platform').value = 'youtube';
-    document.getElementById('bc-restream-name').value = '';
-    document.getElementById('bc-restream-key').value = '';
-    document.getElementById('bc-restream-autostart').checked = false;
-    document.getElementById('bc-restream-channel-url').value = '';
-    document.getElementById('bc-restream-chat-relay').checked = false;
-    document.getElementById('bc-restream-quality').value = 'auto';
-    // Reset advanced fields
-    document.getElementById('bc-restream-custom-vbr').value = '';
-    document.getElementById('bc-restream-custom-abr').value = '';
-    document.getElementById('bc-restream-custom-fps').value = '';
-    document.getElementById('bc-restream-custom-encoder').value = '';
-    // Reset advanced details (now a <details> element)
-    const advDetails = document.getElementById('bc-restream-add-form')?.querySelector('details');
-    if (advDetails) advDetails.removeAttribute('open');
-    onRestreamPlatformChange();
-}
-
-/** Cancel add/edit form */
-function cancelAddRestreamDestination() {
-    document.getElementById('bc-restream-add-form').style.display = 'none';
-    document.getElementById('bc-restream-add-btn-row').style.display = '';
-    _restreamEditingId = null;
-}
-
-/** Handle platform selection change — update server URL placeholder */
-function onRestreamPlatformChange() {
-    const platform = document.getElementById('bc-restream-platform').value;
-    const urlInput = document.getElementById('bc-restream-url');
-    const urlRow = document.getElementById('bc-restream-url-row');
-    const defaultUrl = RESTREAM_DEFAULT_URLS[platform] || '';
-
-    if (defaultUrl) {
-        urlInput.value = defaultUrl;
-        urlInput.placeholder = defaultUrl;
-        // For YouTube/Twitch, the URL is standard — show but pre-fill
-        urlRow.style.display = '';
-    } else {
-        urlInput.value = '';
-        urlInput.placeholder = 'rtmp://your-server.com/live';
-        urlRow.style.display = '';
-    }
-
-    const nameInput = document.getElementById('bc-restream-name');
-    if (!nameInput.value && !_restreamEditingId) {
-        nameInput.placeholder = (RESTREAM_PLATFORM_META[platform]?.name || 'Custom') + ' Channel';
-    }
-}
-
-/**
- * For Kick URLs with chat relay enabled, auto-detect the numeric chatroom ID.
- * Kick's Pusher requires numeric IDs (e.g. chatrooms.98275805.v2) — slugs don't work.
- * The Kick API is Cloudflare-blocked from servers, but works from user browsers.
- */
-async function _resolveKickChatroomId(url) {
-    if (!url) return url;
-    try {
-        const u = new URL(url);
-        const host = u.hostname.toLowerCase().replace('www.', '');
-        if (!host.includes('kick.com')) return url;
-        if (u.searchParams.get('chatroom')) return url; // already has chatroom ID
-        const slug = u.pathname.split('/').filter(Boolean)[0];
-        if (!slug) return url;
-
-        const resp = await fetch(`https://kick.com/api/v2/channels/${slug}`, {
-            headers: { 'Accept': 'application/json' },
-            signal: AbortSignal.timeout(8000),
-        });
-        if (!resp.ok) return url;
-        const data = await resp.json();
-        const chatroomId = data?.chatroom?.id;
-        if (chatroomId && Number.isFinite(chatroomId)) {
-            u.searchParams.set('chatroom', chatroomId);
-            // Also store channel ID for Pusher viewer-count subscription
-            const kickChannelId = data?.id;
-            if (kickChannelId && Number.isFinite(kickChannelId)) {
-                u.searchParams.set('kickChannelId', kickChannelId);
-            }
-            console.log(`[Restream] Auto-detected Kick chatroom ID: ${chatroomId}, channel ID: ${data?.id} for ${slug}`);
-            return u.toString();
-        }
-    } catch (err) {
-        console.warn('[Restream] Could not auto-detect Kick chatroom ID:', err.message);
-    }
-    return url;
-}
-
-/** Save a new or edited restream destination */
-async function saveRestreamDestination() {
-    const platform = document.getElementById('bc-restream-platform').value;
-    const name = document.getElementById('bc-restream-name').value.trim();
-    const server_url = document.getElementById('bc-restream-url').value.trim();
-    const stream_key = document.getElementById('bc-restream-key').value.trim();
-    const auto_start = document.getElementById('bc-restream-autostart').checked;
-    let channel_url = document.getElementById('bc-restream-channel-url').value.trim() || null;
-    const chat_relay = document.getElementById('bc-restream-chat-relay').checked;
-    const quality_preset = document.getElementById('bc-restream-quality').value;
-
-    // Auto-detect Kick chatroom ID for chat relay (Kick API is Cloudflare-blocked from servers)
-    if (chat_relay && channel_url) {
-        channel_url = await _resolveKickChatroomId(channel_url);
-    }
-
-    // Custom encoding overrides (empty string → null to clear)
-    const custom_video_bitrate = document.getElementById('bc-restream-custom-vbr').value.trim() || null;
-    const custom_audio_bitrate = document.getElementById('bc-restream-custom-abr').value.trim() || null;
-    const custom_fps = document.getElementById('bc-restream-custom-fps').value.trim() || null;
-    const custom_encoder_preset = document.getElementById('bc-restream-custom-encoder').value || null;
-
-    if (!stream_key && !_restreamEditingId) {
-        toast('Stream key is required', 'error');
-        return;
-    }
-
-    try {
-        const customFields = { custom_video_bitrate, custom_audio_bitrate, custom_fps, custom_encoder_preset };
-
-        if (_restreamEditingId) {
-            // Update existing
-            const body = { name, server_url, auto_start, channel_url, chat_relay, quality_preset, ...customFields };
-            if (stream_key && !stream_key.startsWith('****')) body.stream_key = stream_key;
-            await api(`/restream/destinations/${_restreamEditingId}`, { method: 'PUT', body });
-            toast('Destination updated', 'success');
-        } else {
-            // Create new
-            await api('/restream/destinations', {
-                method: 'POST',
-                body: { platform, name, server_url, stream_key, auto_start, channel_url, chat_relay, quality_preset, ...customFields },
-            });
-            toast('Destination added', 'success');
-        }
-        cancelAddRestreamDestination();
-        await loadRestreamDestinations();
-        updateRestreamControlPanel();
-    } catch (err) {
-        toast(err.message || 'Failed to save destination', 'error');
-    }
-}
-
-/** Edit an existing destination */
-function editRestreamDestination(destId) {
-    const dest = _restreamDestinations.find(d => d.id === destId);
-    if (!dest) return;
-
-    _restreamEditingId = destId;
-    document.getElementById('bc-restream-add-form').style.display = '';
-    document.getElementById('bc-restream-add-btn-row').style.display = 'none';
-
-    // Can't change platform on edit
-    const platformSelect = document.getElementById('bc-restream-platform');
-    platformSelect.value = dest.platform;
-    platformSelect.disabled = true;
-
-    document.getElementById('bc-restream-name').value = dest.name || '';
-    document.getElementById('bc-restream-url').value = dest.server_url || '';
-    document.getElementById('bc-restream-key').value = ''; // Don't show key, let user replace
-    document.getElementById('bc-restream-key').placeholder = dest.has_key ? 'Leave empty to keep existing key' : 'Paste your stream key';
-    document.getElementById('bc-restream-autostart').checked = !!dest.auto_start;
-    document.getElementById('bc-restream-channel-url').value = dest.channel_url || '';
-    document.getElementById('bc-restream-chat-relay').checked = !!dest.chat_relay;
-    document.getElementById('bc-restream-quality').value = dest.quality_preset || 'auto';
-
-    // Populate custom override fields
-    document.getElementById('bc-restream-custom-vbr').value = dest.custom_video_bitrate || '';
-    document.getElementById('bc-restream-custom-abr').value = dest.custom_audio_bitrate || '';
-    document.getElementById('bc-restream-custom-fps').value = dest.custom_fps || '';
-    document.getElementById('bc-restream-custom-encoder').value = dest.custom_encoder_preset || '';
-
-    // Auto-expand advanced section if any custom overrides are set
-    const hasCustom = dest.custom_video_bitrate || dest.custom_audio_bitrate || dest.custom_fps || dest.custom_encoder_preset;
-    const advDetails = document.getElementById('bc-restream-add-form')?.querySelector('details');
-    if (advDetails) { if (hasCustom) advDetails.setAttribute('open', ''); else advDetails.removeAttribute('open'); }
-
-    onRestreamPlatformChange();
-
-    // Re-enable platform on cancel
-    const origCancel = cancelAddRestreamDestination;
-    cancelAddRestreamDestination = function() {
-        platformSelect.disabled = false;
-        cancelAddRestreamDestination = origCancel;
-        origCancel();
-    };
-}
-
-/** Toggle enabled/disabled */
-async function toggleRestreamDestination(destId) {
-    const dest = _restreamDestinations.find(d => d.id === destId);
-    if (!dest) return;
-    try {
-        await api(`/restream/destinations/${destId}`, {
-            method: 'PUT', body: { enabled: !dest.enabled },
-        });
-        await loadRestreamDestinations();
-        updateRestreamControlPanel();
-        toast(`Destination ${dest.enabled ? 'disabled' : 'enabled'}`, 'info');
-    } catch (err) {
-        toast(err.message || 'Failed to update destination', 'error');
-    }
-}
-
-/** Delete a destination */
-async function deleteRestreamDestination(destId) {
-    if (!confirm('Delete this restream destination?')) return;
-    try {
-        await api(`/restream/destinations/${destId}`, { method: 'DELETE' });
-        await loadRestreamDestinations();
-        updateRestreamControlPanel();
-        toast('Destination deleted', 'info');
-    } catch (err) {
-        toast(err.message || 'Failed to delete destination', 'error');
     }
 }
 
 /** Start restream for a specific destination */
 async function startRestreamDest(destId) {
     try {
-        await api(`/restream/destinations/${destId}/start`, { method: 'POST', body: {} });
+        const payload = broadcastState.activeStreamId ? { streamId: broadcastState.activeStreamId } : {};
+        await api(`/restream/destinations/${destId}/start`, { method: 'POST', body: payload });
         toast('Restream starting…', 'info');
         // Poll status immediately
         await pollRestreamStatus();

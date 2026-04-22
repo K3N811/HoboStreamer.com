@@ -42,6 +42,28 @@ function sanitizeDest(d) {
     };
 }
 
+function getLiveStreamForDestination(dest, userId, requestedStreamId) {
+    const liveStreams = db.getLiveStreamsByUserId(userId) || [];
+    if (dest.managed_stream_id) {
+        return liveStreams.find(s => s.managed_stream_id === dest.managed_stream_id) || null;
+    }
+    if (requestedStreamId) {
+        return liveStreams.find(s => s.id === parseInt(requestedStreamId, 10)) || null;
+    }
+    // Destination has no managed_stream_id (legacy unbound row — DB backfill not yet run).
+    // Return null so start/stop returns a clear error rather than silently picking any stream.
+    console.warn(`[Restream] Destination ${dest.id} has no managed_stream_id; refusing to pick first live stream. Assign the destination to a stream slot.`);
+    return null;
+}
+
+function getLiveStreamsForDestination(dest, userId) {
+    const liveStreams = db.getLiveStreamsByUserId(userId) || [];
+    if (dest.managed_stream_id) {
+        return liveStreams.filter(s => s.managed_stream_id === dest.managed_stream_id);
+    }
+    return liveStreams;
+}
+
 /**
  * Parse and validate custom encoding override fields from request body.
  * Returns only fields that are present and valid; null values clear overrides.
@@ -240,7 +262,7 @@ router.delete('/destinations/:id', requireAuth, (req, res) => {
         }
 
         // Stop any active restream for this destination
-        const liveStreams = db.getLiveStreamsByUserId(req.user.id) || [];
+        const liveStreams = getLiveStreamsForDestination(dest, req.user.id);
         for (const stream of liveStreams) {
             restreamManager.stopRestream(stream.id, dest.id);
             chatRelayService.stopBridge(stream.id, dest.id);
@@ -265,15 +287,12 @@ router.post('/destinations/:id/start', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'Destination is not fully configured (missing server URL or stream key)' });
         }
 
-        // Find the user's live stream
-        const liveStreams = db.getLiveStreamsByUserId(req.user.id) || [];
-        const { streamId } = req.body;
-        const stream = streamId
-            ? liveStreams.find(s => s.id === parseInt(streamId))
-            : liveStreams[0];
-
+        const stream = getLiveStreamForDestination(dest, req.user.id, req.body?.streamId);
         if (!stream) {
-            return res.status(400).json({ error: 'No live stream found. Go live first.' });
+            const message = dest.managed_stream_id
+                ? 'No live stream found for this stream slot. Go live on that slot first.'
+                : 'This destination has no stream slot assigned. Edit the destination and assign it to a stream slot, then go live on that slot.';
+            return res.status(400).json({ error: message });
         }
 
         if (stream.protocol === 'webrtc') {
@@ -291,9 +310,14 @@ router.post('/destinations/:id/start', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'User not found' });
         }
 
+        const streamKey = stream.managed_stream_key || user.stream_key;
+        if (!streamKey) {
+            return res.status(400).json({ error: 'No valid stream key found for the current live stream' });
+        }
+
         const session = await restreamManager.startRestream(stream.id, dest, {
             protocol: stream.protocol,
-            streamKey: user.stream_key,
+            streamKey,
         });
 
         res.json({ ok: true, status: session?.status || 'starting' });
@@ -311,8 +335,7 @@ router.post('/destinations/:id/stop', requireAuth, (req, res) => {
             return res.status(404).json({ error: 'Destination not found' });
         }
 
-        // Stop restream for all of this user's live streams
-        const liveStreams = db.getLiveStreamsByUserId(req.user.id) || [];
+        const liveStreams = getLiveStreamsForDestination(dest, req.user.id);
         for (const stream of liveStreams) {
             restreamManager.stopRestream(stream.id, dest.id);
         }
